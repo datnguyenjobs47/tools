@@ -48,6 +48,10 @@ class ThreadsAutoCommentConfig:
     max_delay: float = 45.0
     max_comments: int = 10
     login_wait_seconds: int = 90
+    cdp_timeout_seconds: float = 60.0
+    debug_browser: bool = False
+    browser_log_path: str | None = None
+    linux_single_process: bool = False
     navigation_timeout_ms: int = 45_000
     action_timeout_ms: int = 15_000
 
@@ -62,6 +66,8 @@ class ThreadsAutoCommentConfig:
             raise ValueError("Delay không được âm.")
         if self.max_delay < self.min_delay:
             raise ValueError("--max-delay phải >= --min-delay.")
+        if self.cdp_timeout_seconds <= 0:
+            raise ValueError("--cdp-timeout phải > 0.")
 
 
 class ThreadsAutoCommenter:
@@ -87,6 +93,10 @@ class ThreadsAutoCommenter:
             browser_id=self.config.browser_id,
             keep_profile=self.config.keep_profile,
             is_mobile=self.config.is_mobile,
+            cdp_timeout_seconds=self.config.cdp_timeout_seconds,
+            debug_browser=self.config.debug_browser,
+            browser_log_path=self.config.browser_log_path,
+            linux_single_process=self.config.linux_single_process,
         ) as handler:
             page = await handler.get_page()
             await self._ensure_logged_in(page)
@@ -248,6 +258,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-delay", type=float, default=45.0, help="Delay tối đa giữa các comment (giây).")
     parser.add_argument("--max-comments", type=int, default=10, help="Giới hạn số comment trong một lần chạy.")
     parser.add_argument("--login-wait-seconds", type=int, default=90, help="Thời gian chờ đăng nhập thủ công.")
+    parser.add_argument("--cdp-timeout", type=float, default=60.0, help="Số giây chờ Chrome mở CDP port.")
+    parser.add_argument("--debug-browser", action="store_true", help="Ghi Chrome stdout/stderr và launch args để debug lỗi CDP.")
+    parser.add_argument("--browser-log-path", help="Đường dẫn file log Chrome khi dùng --debug-browser.")
+    parser.add_argument("--linux-single-process", action="store_true", help="Bật lại --single-process trên Linux nếu container bắt buộc.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
 
@@ -267,6 +281,10 @@ async def async_main(args: argparse.Namespace) -> int:
         max_delay=args.max_delay,
         max_comments=args.max_comments,
         login_wait_seconds=args.login_wait_seconds,
+        cdp_timeout_seconds=args.cdp_timeout,
+        debug_browser=args.debug_browser,
+        browser_log_path=args.browser_log_path,
+        linux_single_process=args.linux_single_process,
     )
     commenter = ThreadsAutoCommenter(config)
     results = await commenter.run()

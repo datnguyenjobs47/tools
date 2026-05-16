@@ -54,6 +54,26 @@ uv run python threads_auto_comment.py \
 
 Sau khi profile đã đăng nhập, có thể thêm `--headless` nếu môi trường hỗ trợ.
 
+
+### Debug lỗi Chrome/CDP
+
+Nếu gặp lỗi kiểu `Timeout: Chrome did not open CDP port ...`, chạy lại với log trình duyệt:
+
+```bash
+uv run python threads_auto_comment.py \
+  --post-url "https://www.threads.net/@example/post/POST_ID" \
+  --comment "Nội dung comment" \
+  --debug-browser \
+  --cdp-timeout 90
+```
+
+Tool sẽ in launch args và ghi stdout/stderr của Chrome vào `__temp__/logs/chrome-<browser-id>.log` (hoặc file bạn truyền qua `--browser-log-path`). Các nguyên nhân thường gặp:
+
+- Máy/server Linux không có display: thử thêm `--headless` nếu profile đã đăng nhập.
+- Profile Chrome đang bị lock bởi process cũ: tắt Chrome cũ hoặc đổi `--browser-id`.
+- Chrome/Chromium bản Snap hoặc desktop Linux bị crash với `--single-process`: flag này đã tắt mặc định; chỉ bật `--linux-single-process` nếu container bắt buộc.
+- Chrome khởi động chậm: tăng `--cdp-timeout`.
+
 ### Định dạng input file
 
 `data/threads_posts.txt`:

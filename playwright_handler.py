@@ -101,11 +101,16 @@ def build_chrome_args(
     proxy_args: list[str],
     ua_agents: list[str],
     headless: bool,
+    linux_single_process: bool = False,
 ) -> list[str]:
     """
     Build Chrome subprocess args theo platform:
     - Windows : dùng --exclude-switches thay vì blink flags (tránh warning)
     - Linux   : cần --no-sandbox, --disable-dev-shm-usage, v.v.
+
+    ``--single-process`` không bật mặc định vì Chrome/Chromium trên nhiều
+    Linux desktop hoặc bản Snap có thể thoát sớm trước khi mở CDP port. Chỉ
+    bật lại bằng ``linux_single_process=True`` nếu môi trường container bắt buộc.
     """
     is_linux = sys.platform.startswith("linux")
 
@@ -127,9 +132,10 @@ def build_chrome_args(
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            "--single-process",
             "--disable-blink-features=AutomationControlled",
         ]
+        if linux_single_process:
+            args.append("--single-process")
     else:
         # Windows: --disable-blink-features gây warning, dùng exclude-switches thay thế
         args += [
@@ -237,8 +243,12 @@ class PlaywrightHandler:
         browser_id:      int = 0,
         monitor_network: bool = False,
         cookies:         list[dict] | None = None,
-        is_mobile:          bool = False,
+        is_mobile:       bool = False,
         keep_profile:    bool = False,
+        cdp_timeout_seconds: float = 15.0,
+        debug_browser:   bool = False,
+        browser_log_path: str | None = None,
+        linux_single_process: bool = False,
     ) -> None:
         self.browser_type    = browser_type.lower()
         self.headless        = headless
@@ -248,6 +258,10 @@ class PlaywrightHandler:
         self.cookies         = cookies or []
         self.is_mobile       = is_mobile
         self.keep_profile    = keep_profile
+        self.cdp_timeout_seconds = cdp_timeout_seconds
+        self.debug_browser   = debug_browser
+        self.browser_log_path = browser_log_path
+        self.linux_single_process = linux_single_process
         self.middleware_port = 8800 + browser_id
         self.middleware_task = None
         self.fingerprint     = generate_mobile_fingerprint() if is_mobile else generate_desktop_fingerprint()
@@ -262,6 +276,10 @@ class PlaywrightHandler:
         self.browser        = None
         self.context        = None
         self.chrome_process = None
+        self.chrome_args: list[str] = []
+        self.chrome_log_file = None
+        self.cdp_port: int | None = None
+        self.user_data_dir: str | None = None
         self._is_active     = False
 
         self._cdp_sessions: dict[Page, Any] = {}
@@ -354,9 +372,11 @@ class PlaywrightHandler:
             self.playwright = await p.start()
 
             port          = 9222 + self.browser_id
+            self.cdp_port = port
             user_data_dir = os.path.abspath(
                 f"./__temp__/profiles/profile-{self.browser_id}"
             )
+            self.user_data_dir = user_data_dir
 
             # Xóa profile cũ nếu keep_profile=False
             if not self.keep_profile and os.path.exists(user_data_dir):
@@ -434,12 +454,31 @@ class PlaywrightHandler:
                     proxy_args=proxy_args,
                     ua_agents=self._build_fingerprint_subprocess_args(),
                     headless=self.headless,
+                    linux_single_process=self.linux_single_process,
                 )
+                self.chrome_args = args
+
+                stdout_target: Any = subprocess.DEVNULL
+                stderr_target: Any = subprocess.DEVNULL
+                if self.debug_browser:
+                    log_path = self.browser_log_path or os.path.abspath(
+                        f"./__temp__/logs/chrome-{self.browser_id}.log"
+                    )
+                    self.browser_log_path = log_path
+                    os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+                    self.chrome_log_file = open(log_path, "a", encoding="utf-8")
+                    self.chrome_log_file.write("\n--- Chrome launch ---\n")
+                    self.chrome_log_file.write(" ".join(args) + "\n")
+                    self.chrome_log_file.flush()
+                    stdout_target = self.chrome_log_file
+                    stderr_target = self.chrome_log_file
+                    logger.info("Chrome launch args: %s", " ".join(args))
+                    logger.info("Chrome stdout/stderr log: %s", log_path)
 
                 self.chrome_process = subprocess.Popen(
                     args,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=stdout_target,
+                    stderr=stderr_target,
                 )
 
                 await self._wait_for_cdp_port(port)
@@ -583,14 +622,25 @@ class PlaywrightHandler:
             except Exception as e:
                 logger.error(f"Error killing chrome: {e}")
 
+        if self.chrome_log_file:
+            try:
+                self.chrome_log_file.close()
+            except Exception as e:
+                logger.error(f"Error closing chrome log file: {e}")
+            self.chrome_log_file = None
+
         logger.info(f"Browser {self.browser_id} closed")
 
     # ------------------------------------------------------------------
     # CDP port wait
     # ------------------------------------------------------------------
 
-    async def _wait_for_cdp_port(self, port: int, retries: int = 30) -> None:
-        for _ in range(retries):
+    async def _wait_for_cdp_port(self, port: int, retries: int | None = None) -> None:
+        wait_seconds = self.cdp_timeout_seconds
+        attempts = retries if retries is not None else max(1, int(wait_seconds / 0.5))
+        for _ in range(attempts):
+            if self.chrome_process and self.chrome_process.poll() is not None:
+                raise RuntimeError(self._chrome_cdp_error_message(port, exited=True))
             try:
                 urllib.request.urlopen(
                     f"http://127.0.0.1:{port}/json/version", timeout=1
@@ -598,9 +648,24 @@ class PlaywrightHandler:
                 return
             except Exception:
                 await asyncio.sleep(0.5)
-        raise RuntimeError(
-            f"Timeout: Chrome did not open CDP port {port} after {retries * 0.5}s"
-        )
+        raise RuntimeError(self._chrome_cdp_error_message(port, exited=False))
+
+    def _chrome_cdp_error_message(self, port: int, exited: bool) -> str:
+        status = "exited before opening" if exited else "did not open"
+        lines = [
+            f"Timeout: Chrome {status} CDP port {port} after {self.cdp_timeout_seconds:.1f}s",
+            f"Chrome executable args: {' '.join(self.chrome_args) if self.chrome_args else '(not built)'}",
+        ]
+        if self.chrome_process:
+            lines.append(f"Chrome return code: {self.chrome_process.poll()}")
+        if self.user_data_dir:
+            lines.append(f"Chrome user-data-dir: {self.user_data_dir}")
+        if self.browser_log_path:
+            lines.append(f"Chrome stdout/stderr log: {self.browser_log_path}")
+        else:
+            lines.append("Run again with debug_browser=True or CLI --debug-browser to capture Chrome stdout/stderr.")
+        lines.append("Common fixes: increase cdp_timeout_seconds/--cdp-timeout, use --headless on servers without DISPLAY, remove a stale profile lock, or try a different --browser-id.")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Page management
