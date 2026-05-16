@@ -11,9 +11,34 @@ Notebook `source.ipynb` đang là một flow thử nghiệm Playwright:
 
 Phần có thể tái sử dụng cho tool mới là `PlaywrightHandler`: nó đã xử lý lifecycle browser, profile, proxy middleware, CDP và emulation. Vì vậy tool Threads mới dùng lại handler này thay vì copy logic notebook.
 
-## Tool auto comment Threads
+## Bước 1: Scraper data Threads theo keyword
 
-File `threads_auto_comment.py` cung cấp CLI script để gửi comment vào các Threads post URL đã cung cấp sẵn. Mặc định tool dùng `--browser-type chromium` (Playwright-managed browser) để tránh lỗi Chrome/CDP port; chỉ dùng `--browser-type chrome` khi bạn thật sự muốn chạy Google Chrome hệ thống qua CDP.
+File `threads_keyword_scraper.py` là tool bước 1 để scrape dữ liệu Threads theo keyword và xuất dataset JSONL/CSV. Mặc định tool dùng `--browser-type chromium` (Playwright-managed browser) để tránh lỗi Chrome/CDP port; chỉ dùng `--browser-type chrome` khi bạn thật sự muốn chạy Google Chrome hệ thống qua CDP.
+
+Ví dụ scrape một keyword:
+
+```bash
+uv run python threads_keyword_scraper.py \
+  --keyword "shopee" \
+  --max-posts-per-keyword 50 \
+  --output data/threads_shopee.jsonl
+```
+
+Ví dụ scrape nhiều keyword từ file:
+
+```bash
+uv run python threads_keyword_scraper.py \
+  --keywords-file data/threads_keywords.txt \
+  --output data/threads_keyword_results.csv \
+  --output-format csv \
+  --max-scrolls 15
+```
+
+Output gồm các field: `keyword`, `post_url`, `username`, `text`, `timestamp`, `scraped_at`.
+
+## Bước 2: Tool auto comment Threads
+
+File `threads_auto_comment.py` cung cấp CLI script để gửi comment vào các Threads post URL đã cung cấp sẵn sau khi bạn đã review dataset ở bước 1. Mặc định tool dùng `--browser-type chromium` (Playwright-managed browser) để tránh lỗi Chrome/CDP port; chỉ dùng `--browser-type chrome` khi bạn thật sự muốn chạy Google Chrome hệ thống qua CDP.
 
 Các giới hạn có chủ ý:
 
