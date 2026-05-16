@@ -149,6 +149,40 @@ def build_chrome_args(
     return args + proxy_args + ua_agents
 
 
+def build_chromium_launch_args(linux_single_process: bool = False) -> list[str]:
+    """Build args for Playwright-managed Chromium persistent contexts.
+
+    Khác với ``build_chrome_args``, hàm này không thêm executable,
+    ``--remote-debugging-port`` hoặc ``--user-data-dir`` vì Playwright tự quản lý
+    các phần đó khi dùng ``launch_persistent_context``.
+    """
+    is_linux = sys.platform.startswith("linux")
+    args = [
+        "--remote-allow-origins=*",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    ]
+
+    if is_linux:
+        args += [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-blink-features=AutomationControlled",
+        ]
+        if linux_single_process:
+            args.append("--single-process")
+    else:
+        args += [
+            "--exclude-switches=enable-automation",
+            "--disable-infobars",
+        ]
+
+    return args
+
+
 # ---------------------------------------------------------------------------
 # NetworkMonitor
 # ---------------------------------------------------------------------------
@@ -226,8 +260,9 @@ class NetworkMonitor:
 
 class PlaywrightHandler:
     """
-    Chrome CDP handler với hỗ trợ:
-    - Real Chrome profile qua debugging port
+    Browser handler với hỗ trợ:
+    - ``browser_type="chromium"``: Playwright-managed persistent context, không cần CDP port ngoài
+    - ``browser_type="chrome"``: Real Chrome profile qua debugging port
     - Mobile emulation qua CDP Emulation API (CDP session cached theo page)
     - Platform-aware Chrome args (Windows / Linux / Docker)
     - Profile persistence tuỳ chọn (keep_profile)
@@ -317,6 +352,10 @@ class PlaywrightHandler:
         Dùng cached CDP session — chỉ gọi khi tạo page mới.
         """
         if getattr(page, "_emulation_applied", False):
+            return
+
+        if self.browser_type == "firefox":
+            page._emulation_applied = True # type: ignore
             return
 
         fp = self.fingerprint
@@ -444,7 +483,35 @@ class PlaywrightHandler:
                 )
                 self.browser = self.context.browser
 
-            else:
+            elif self.browser_type == "chromium":
+                fp = self.fingerprint
+                proxy_config = (
+                    {"server": f"http://127.0.0.1:{self.middleware_port}"}
+                    if self.proxy else None
+                )
+                args = build_chromium_launch_args(
+                    linux_single_process=self.linux_single_process,
+                )
+                self.chrome_args = args
+                if self.debug_browser:
+                    logger.info("Chromium launch args: %s", " ".join(args))
+                    logger.info(
+                        "browser_type=chromium uses Playwright launch_persistent_context; "
+                        "no external CDP port or Chrome stdout log is created."
+                    )
+
+                self.context = await self.playwright.chromium.launch_persistent_context(
+                    user_data_dir=user_data_dir,
+                    headless=self.headless,
+                    proxy=proxy_config, # type: ignore
+                    user_agent=fp["user_agent"],
+                    viewport=fp["viewport"],
+                    locale=fp["language"],
+                    args=args,
+                )
+                self.browser = self.context.browser
+
+            elif self.browser_type == "chrome":
                 chrome_path = get_browser_executable("chrome")
 
                 args = build_chrome_args(
@@ -492,6 +559,9 @@ class PlaywrightHandler:
                     if self.browser.contexts
                     else await self.browser.new_context()
                 )
+
+            else:
+                raise ValueError("browser_type must be one of: chrome, chromium, firefox")
 
             # Anti-fingerprint init script
             fp = self.fingerprint
@@ -599,7 +669,7 @@ class PlaywrightHandler:
         self._cdp_sessions.clear()
 
         for coro_fn, label in [
-            (lambda: self.context.close() if self.browser_type == "firefox" and self.context else None, "context"),
+            (lambda: self.context.close() if self.browser_type in {"firefox", "chromium"} and self.context else None, "context"),
             (lambda: self.browser.close()  if self.browser    else None, "browser"),
             (lambda: self.playwright.stop() if self.playwright else None, "playwright"),
         ]:
@@ -662,10 +732,29 @@ class PlaywrightHandler:
             lines.append(f"Chrome user-data-dir: {self.user_data_dir}")
         if self.browser_log_path:
             lines.append(f"Chrome stdout/stderr log: {self.browser_log_path}")
+            log_tail = self._read_browser_log_tail()
+            if log_tail:
+                lines.append("Chrome log tail:")
+                lines.append(log_tail)
         else:
             lines.append("Run again with debug_browser=True or CLI --debug-browser to capture Chrome stdout/stderr.")
-        lines.append("Common fixes: increase cdp_timeout_seconds/--cdp-timeout, use --headless on servers without DISPLAY, remove a stale profile lock, or try a different --browser-id.")
+        lines.append("Common fixes: use browser_type=chromium / CLI --browser-type chromium to avoid external Chrome CDP, increase cdp_timeout_seconds/--cdp-timeout, use --headless on servers without DISPLAY, remove a stale profile lock, or try a different --browser-id.")
         return "\n".join(lines)
+
+    def _read_browser_log_tail(self, max_lines: int = 40) -> str:
+        if self.chrome_log_file:
+            try:
+                self.chrome_log_file.flush()
+            except Exception:
+                pass
+        if not self.browser_log_path or not os.path.exists(self.browser_log_path):
+            return ""
+        try:
+            with open(self.browser_log_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()[-max_lines:]
+            return "".join(lines).strip()
+        except Exception as e:
+            return f"<failed to read Chrome log: {e}>"
 
     # ------------------------------------------------------------------
     # Page management

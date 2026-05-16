@@ -40,6 +40,7 @@ class ThreadsAutoCommentConfig:
     post_urls: list[str]
     comments: list[str]
     browser_id: int = 0
+    browser_type: str = "chromium"
     headless: bool = False
     keep_profile: bool = True
     is_mobile: bool = False
@@ -68,6 +69,8 @@ class ThreadsAutoCommentConfig:
             raise ValueError("--max-delay phải >= --min-delay.")
         if self.cdp_timeout_seconds <= 0:
             raise ValueError("--cdp-timeout phải > 0.")
+        if self.browser_type not in {"chrome", "chromium", "firefox"}:
+            raise ValueError("--browser-type phải là: chrome, chromium, hoặc firefox.")
 
 
 class ThreadsAutoCommenter:
@@ -88,7 +91,7 @@ class ThreadsAutoCommenter:
         total = min(self.config.max_comments, len(self.config.post_urls))
 
         async with PlaywrightHandler(
-            browser_type="chrome",
+            browser_type=self.config.browser_type,
             headless=self.config.headless,
             browser_id=self.config.browser_id,
             keep_profile=self.config.keep_profile,
@@ -249,7 +252,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--post-url-file", help="File chứa Threads post URL, mỗi dòng một URL.")
     parser.add_argument("--comment", action="append", default=[], help="Nội dung comment. Có thể truyền nhiều lần.")
     parser.add_argument("--comments-file", help="File chứa nội dung comment, mỗi dòng một comment.")
-    parser.add_argument("--browser-id", type=int, default=20, help="ID profile Chrome trong __temp__/profiles.")
+    parser.add_argument("--browser-id", type=int, default=20, help="ID profile browser trong __temp__/profiles.")
+    parser.add_argument(
+        "--browser-type",
+        default="chromium",
+        choices=["chromium", "chrome", "firefox"],
+        help="chromium dùng Playwright và không cần CDP port ngoài; chrome dùng Google Chrome qua CDP.",
+    )
     parser.add_argument("--headless", action="store_true", help="Chạy headless. Chỉ dùng khi profile đã đăng nhập.")
     parser.add_argument("--no-keep-profile", action="store_true", help="Không giữ profile sau khi chạy.")
     parser.add_argument("--mobile", action="store_true", help="Dùng mobile fingerprint từ PlaywrightHandler.")
@@ -273,6 +282,7 @@ async def async_main(args: argparse.Namespace) -> int:
         post_urls=post_urls,
         comments=comments,
         browser_id=args.browser_id,
+        browser_type=args.browser_type,
         headless=args.headless,
         keep_profile=not args.no_keep_profile,
         is_mobile=args.mobile,
