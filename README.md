@@ -1,3 +1,126 @@
-cài ffmpeg:
+# Browser tools
 
+## Phân tích `source.ipynb`
+
+Notebook `source.ipynb` đang là một flow thử nghiệm Playwright:
+
+- Tìm executable của Chrome/Edge/Firefox trên máy local.
+- Khởi tạo `PlaywrightHandler` với Chrome profile riêng, proxy, anti-fingerprint và tùy chọn giữ profile.
+- Mở page bằng profile đó, truy cập một danh sách retailer của 11st.
+- Có bước thử nghiệm solver reCAPTCHA và click xác nhận trên UI 11st.
+
+Phần có thể tái sử dụng cho tool mới là `PlaywrightHandler`: nó đã xử lý lifecycle browser, profile, proxy middleware, CDP và emulation. Vì vậy tool Threads mới dùng lại handler này thay vì copy logic notebook.
+
+## Bước 1: Scraper data Threads theo keyword
+
+File `threads_keyword_scraper.py` là tool bước 1 để scrape dữ liệu Threads theo keyword và xuất dataset JSONL/CSV. Mặc định tool dùng `--browser-type chromium` (Playwright-managed browser) để tránh lỗi Chrome/CDP port; chỉ dùng `--browser-type chrome` khi bạn thật sự muốn chạy Google Chrome hệ thống qua CDP.
+
+Ví dụ scrape một keyword:
+
+```bash
+uv run python threads_keyword_scraper.py \
+  --keyword "shopee" \
+  --max-posts-per-keyword 50 \
+  --output data/threads_shopee.jsonl
+```
+
+Ví dụ scrape nhiều keyword từ file:
+
+```bash
+uv run python threads_keyword_scraper.py \
+  --keywords-file data/threads_keywords.txt \
+  --output data/threads_keyword_results.csv \
+  --output-format csv \
+  --max-scrolls 15
+```
+
+Output gồm các field: `keyword`, `post_url`, `username`, `text`, `timestamp`, `scraped_at`.
+
+## Bước 2: Tool auto comment Threads
+
+File `threads_auto_comment.py` cung cấp CLI script để gửi comment vào các Threads post URL đã cung cấp sẵn sau khi bạn đã review dataset ở bước 1. Mặc định tool dùng `--browser-type chromium` (Playwright-managed browser) để tránh lỗi Chrome/CDP port; chỉ dùng `--browser-type chrome` khi bạn thật sự muốn chạy Google Chrome hệ thống qua CDP.
+
+Các giới hạn có chủ ý:
+
+- Chỉ chạy với profile trình duyệt do bạn đăng nhập thủ công.
+- Không tự giải CAPTCHA/challenge, không bypass rate-limit, không tự tìm mục tiêu để spam.
+- Mặc định giữ profile (`--browser-id`) để bạn đăng nhập một lần rồi tái sử dụng.
+- Có `--dry-run`, `--max-comments`, `--min-delay`, `--max-delay` để kiểm soát batch.
+
+### Cài đặt
+
+```bash
+uv sync
+uv run playwright install chromium
+```
+
+### Chạy thử không gửi comment
+
+```bash
+uv run python threads_auto_comment.py \
+  --post-url "https://www.threads.net/@example/post/POST_ID" \
+  --comment "Nội dung comment" \
+  --dry-run
+```
+
+### Chạy thật
+
+Lần đầu nên chạy không headless để đăng nhập Threads trong cửa sổ Chrome:
+
+```bash
+uv run python threads_auto_comment.py \
+  --browser-id 20 \
+  --post-url-file data/threads_posts.txt \
+  --comments-file data/threads_comments.txt \
+  --max-comments 5 \
+  --min-delay 30 \
+  --max-delay 90
+```
+
+Sau khi profile đã đăng nhập, có thể thêm `--headless` nếu môi trường hỗ trợ.
+
+
+### Debug lỗi Chrome/CDP
+
+Nếu gặp lỗi kiểu `Timeout: Chrome did not open CDP port ...`, chạy lại với log trình duyệt:
+
+```bash
+uv run python threads_auto_comment.py \
+  --post-url "https://www.threads.net/@example/post/POST_ID" \
+  --comment "Nội dung comment" \
+  --browser-type chrome \
+  --debug-browser \
+  --cdp-timeout 90
+```
+
+Khi dùng `--browser-type chrome`, tool sẽ in launch args và ghi stdout/stderr của Chrome vào `__temp__/logs/chrome-<browser-id>.log` (hoặc file bạn truyền qua `--browser-log-path`). Nếu Chrome hệ thống thoát với return code như `-6`, thử bỏ `--browser-type chrome` để quay về mặc định `chromium` trước. Các nguyên nhân thường gặp:
+
+- Máy/server Linux không có display: thử thêm `--headless` nếu profile đã đăng nhập.
+- Profile Chrome đang bị lock bởi process cũ: tắt Chrome cũ hoặc đổi `--browser-id`.
+- Chrome/Chromium bản Snap hoặc desktop Linux bị crash với `--single-process`: flag này đã tắt mặc định; chỉ bật `--linux-single-process` nếu container bắt buộc.
+- Chrome khởi động chậm: tăng `--cdp-timeout`.
+- Không cần Google Chrome hệ thống: dùng mặc định `--browser-type chromium` để Playwright tự launch browser, không cần external CDP port.
+
+### Định dạng input file
+
+`data/threads_posts.txt`:
+
+```text
+https://www.threads.net/@example/post/POST_ID_1
+https://www.threads.net/@example/post/POST_ID_2
+```
+
+`data/threads_comments.txt`:
+
+```text
+Comment 1
+Comment 2
+```
+
+## Ghi chú ffmpeg
+
+Trên Windows có thể cài ffmpeg bằng:
+
+```powershell
 winget install -e --id Gyan.FFmpeg
+```
