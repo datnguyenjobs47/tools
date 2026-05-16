@@ -1,0 +1,24 @@
+[project]
+name = "browser-template"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiofiles>=25.1.0",
+    "beautifulsoup4>=4.14.3",
+    "capmonstercloudclient>=4.1.0",
+    "loguru>=0.7.3",
+    "playwright>=1.58.0",
+    "pydub>=0.25.1",
+    "pyyaml>=6.0.3",
+    "requests>=2.33.1",
+    "speechrecognition>=3.16.1",
+    "tqdm>=4.67.3",
+    "user-agents>=2.2.0",
+]
+
+[dependency-groups]
+dev = [
+    "crawlerdetect>=0.3.2",
+]
